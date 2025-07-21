@@ -9,7 +9,6 @@ services:
     ports:
       - "19092:9092"
       - "19093:9093"
-      - "18080:8080"
       - "12222:22"
     volumes:
       - ./deployment-files:/tmp/files
@@ -83,6 +82,24 @@ services:
         exec /usr/sbin/init
       "
     privileged: true
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    hostname: kafka-ui
+    networks:
+      kafka-net:
+        ipv4_address: 192.168.1.20
+    ports:
+      - "18080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: test-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-test-node-1:9092,kafka-test-node-2:9092,kafka-test-node-3:9092
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: PLAINTEXT
+    depends_on:
+      - kafka-node-1
+      - kafka-node-2
+      - kafka-node-3
 
 networks:
   kafka-net:
