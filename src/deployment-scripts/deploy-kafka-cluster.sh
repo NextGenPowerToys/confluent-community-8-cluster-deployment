@@ -410,7 +410,73 @@ EOF
 
 # Start Kafka services
 start_services() {
-    echo "Starting Kafka services..."
+    echo "Starting Kafka services simultaneously..."
+    
+    if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+        # Start all Docker nodes simultaneously in background
+        local ports=(12222 12223 12224)
+        for i in "${!NODES[@]}"; do
+            if [[ $i -ge $SERVER_COUNT ]]; then
+                continue
+            fi
+            
+            local node_name=${NODES[$i]}
+            local port=${ports[$i]}
+            
+            echo "Starting Kafka on $node_name in background..."
+            
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=$port -i ~/.ssh/kafka_test_key $SSH_USER@localhost << 'EOF' &
+                # Find JDK directory
+                JDK_DIR=$(ls -d /opt/jdk-21* 2>/dev/null | head -1)
+                if [[ -n "$JDK_DIR" ]]; then
+                    export JAVA_HOME=$JDK_DIR
+                else
+                    echo "ERROR: Could not find JDK directory"
+                    exit 1
+                fi
+                
+                echo "Starting Kafka server directly..."
+                
+                # Start Kafka in background
+                nohup sudo -u kafka JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-server-start /opt/kafka/etc/kafka/server.properties > /var/log/confluent/kafka/kafka.log 2>&1 &
+EOF
+        done
+        
+        echo "Waiting for all Kafka nodes to start..."
+        sleep 30
+        
+        # Check if all nodes are running
+        for i in "${!NODES[@]}"; do
+            if [[ $i -ge $SERVER_COUNT ]]; then
+                continue
+            fi
+            
+            local node_name=${NODES[$i]}
+            local port=${ports[$i]}
+            
+            echo "Checking Kafka on $node_name..."
+            
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=$port -i ~/.ssh/kafka_test_key $SSH_USER@localhost << 'EOF'
+                for attempt in {1..30}; do
+                    if netstat -ln 2>/dev/null | grep -q ":9092.*LISTEN" || ss -ln 2>/dev/null | grep -q ":9092"; then
+                        echo "Kafka started successfully on port 9092"
+                        exit 0
+                    fi
+                    
+                    if [ $attempt -eq 30 ]; then
+                        echo "ERROR: Kafka failed to start within 60 seconds"
+                        echo "Last 10 lines of Kafka log:"
+                        tail -10 /var/log/confluent/kafka/kafka.log 2>/dev/null || echo "No log file found"
+                        exit 1
+                    fi
+                    
+                    sleep 2
+                done
+EOF
+        done
+        
+        return 0
+    fi
     
     for i in "${!NODES[@]}"; do
         if [[ $i -ge $SERVER_COUNT ]]; then
@@ -485,43 +551,7 @@ EOS
                 sleep 2
                 ((attempt++))
             done
-        elif [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
-            # Docker deployment - start Kafka directly
-            local ports=(12222 12223 12224)
-            local port=${ports[$i]}
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=$port -i ~/.ssh/kafka_test_key $SSH_USER@localhost << 'EOF'
-                # Find JDK directory
-                JDK_DIR=$(ls -d /opt/jdk-21* 2>/dev/null | head -1)
-                if [[ -n "$JDK_DIR" ]]; then
-                    export JAVA_HOME=$JDK_DIR
-                else
-                    echo "ERROR: Could not find JDK directory"
-                    exit 1
-                fi
-                
-                echo "Starting Kafka server directly..."
-                
-                # Start Kafka in background
-                nohup sudo -u kafka JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-server-start /opt/kafka/etc/kafka/server.properties > /var/log/confluent/kafka/kafka.log 2>&1 &
-                
-                # Wait for Kafka to start
-                echo "Waiting for Kafka to start..."
-                for attempt in {1..30}; do
-                    if netstat -ln 2>/dev/null | grep -q ":9092.*LISTEN" || ss -ln 2>/dev/null | grep -q ":9092"; then
-                        echo "Kafka started successfully on port 9092"
-                        break
-                    fi
-                    
-                    if [ $attempt -eq 30 ]; then
-                        echo "ERROR: Kafka failed to start within 60 seconds"
-                        echo "Last 20 lines of Kafka log:"
-                        tail -20 /var/log/confluent/kafka/kafka.log 2>/dev/null || echo "No log file found"
-                        exit 1
-                    fi
-                    
-                    sleep 2
-                done
-EOF
+
         else
             # Production deployment - use systemd
             ssh $SSH_USER@$node_ip << 'EOF'
