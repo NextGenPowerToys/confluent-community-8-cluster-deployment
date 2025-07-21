@@ -2,6 +2,27 @@
 
 set -e
 
+# Ask for deployment type
+read -p "Deployment type - (l)ocal, (d)ocker, or (r)emote? " DEPLOY_TYPE
+case "$DEPLOY_TYPE" in
+    [Ll]*)
+        LOCAL_DEPLOYMENT=true
+        DOCKER_DEPLOYMENT=false
+        ;;
+    [Dd]*)
+        LOCAL_DEPLOYMENT=false
+        DOCKER_DEPLOYMENT=true
+        ;;
+    [Rr]*)
+        LOCAL_DEPLOYMENT=false
+        DOCKER_DEPLOYMENT=false
+        ;;
+    *)
+        echo "ERROR: Invalid deployment type. Use l, d, or r"
+        exit 1
+        ;;
+esac
+
 # Prompt for environment name
 read -p "Enter environment name (alphanumeric only): " ENVIRONMENT
 if [[ ! "$ENVIRONMENT" =~ ^[a-zA-Z0-9]+$ ]]; then
@@ -9,17 +30,29 @@ if [[ ! "$ENVIRONMENT" =~ ^[a-zA-Z0-9]+$ ]]; then
     exit 1
 fi
 
-# Configuration for 3-server production deployment
-SERVER_COUNT=3
-LOCAL_DEPLOYMENT=false
+# Prompt for number of servers
+read -p "Enter number of servers (minimum 1): " SERVER_COUNT
+if [[ ! "$SERVER_COUNT" =~ ^[0-9]+$ ]] || [[ $SERVER_COUNT -lt 1 ]]; then
+    echo "ERROR: Server count must be a number >= 1"
+    exit 1
+fi
 
-# Server configuration
-declare -a HOSTNAMES=("kafka-node-1" "kafka-node-2" "kafka-node-3")
-declare -a IPS=("192.168.1.10" "192.168.1.11" "192.168.1.12")
+# Server configuration based on deployment type
+if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+    declare -a HOSTNAMES=("kafka-node-1" "kafka-node-2" "kafka-node-3")
+    declare -a IPS=("192.168.1.10" "192.168.1.11" "192.168.1.12")
+    SSH_USER="root"
+    SSH_KEY_PATH="~/.ssh/kafka_test_key"
+    LOCAL_FILES_PATH="/tmp/files"
+else
+    declare -a HOSTNAMES=("kafka-node-1" "kafka-node-2" "kafka-node-3")
+    declare -a IPS=("192.168.1.10" "192.168.1.11" "192.168.1.12")
+    SSH_USER="root"
+    SSH_KEY_PATH="/path/to/private/key"
+    LOCAL_FILES_PATH="/Users/alexk/pipelines/kafka-community-8/deployment-files"
+fi
 
 # Credentials
-SSH_USER="root"
-SSH_KEY_PATH="/path/to/private/key"
 KAFKA_USER="kafka"
 KAFKA_GROUP="kafka"
 
@@ -32,7 +65,6 @@ DATA_DIR="/kafka"
 LOG_DIR="/var/log/confluent"
 
 # Installation files
-LOCAL_FILES_PATH="/Users/alexk/pipelines/kafka-community-8/deployment-files"
 CONFLUENT_ZIP="confluent-community-8.0.0.zip"
 JDK_ARCHIVE="jdk-21.0.8-macos-x64.tar.gz"
 JAVA_HOME="/opt/jdk-21.0.8.jdk/Contents/Home"
@@ -84,6 +116,17 @@ validate_prerequisites() {
         echo "WARNING: Running as root. This is not recommended."
     fi
     
+    if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+        echo "Docker deployment - skipping local Java validation"
+        # Only check if Confluent ZIP exists in deployment-files
+        if [[ ! -f "/Users/alexk/pipelines/kafka-community-8/deployment-files/$CONFLUENT_ZIP" ]]; then
+            echo "ERROR: Confluent ZIP not found at /Users/alexk/pipelines/kafka-community-8/deployment-files/$CONFLUENT_ZIP"
+            exit 1
+        fi
+        echo "Prerequisites validation completed successfully"
+        return 0
+    fi
+    
     validate_java
     
     # Check installation files
@@ -127,18 +170,36 @@ test_ssh() {
         return 0
     fi
     
+    if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+        echo "Testing Docker SSH connectivity..."
+        local ports=(12222 12223 12224)
+        for i in "${!NODES[@]}"; do
+            if [[ $i -lt $SERVER_COUNT ]]; then
+                echo "Testing SSH to ${NODES[$i]} via localhost:${ports[$i]}..."
+                ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=${ports[$i]} -i ~/.ssh/kafka_test_key $SSH_USER@localhost "echo 'SSH OK'" || {
+                    echo "ERROR: Cannot SSH to ${NODES[$i]} via localhost:${ports[$i]}"
+                    exit 1
+                }
+            fi
+        done
+        echo "Docker SSH connectivity test completed successfully"
+        return 0
+    fi
+    
     echo "Testing SSH connectivity..."
     for i in "${!NODES[@]}"; do
-        echo "Testing SSH to ${NODES[$i]} (${IPS[$i]})..."
-        ssh -o ConnectTimeout=5 -o BatchMode=yes $SSH_USER@${IPS[$i]} "echo 'SSH OK'" || {
-            echo "ERROR: Cannot SSH to ${NODES[$i]} (${IPS[$i]})"
-            echo "Please ensure:"
-            echo "  1. SSH key is properly configured"
-            echo "  2. Host is reachable"
-            echo "  3. SSH service is running on target host"
-            exit 1
-        }
-        verify_os ${IPS[$i]}
+        if [[ $i -lt $SERVER_COUNT ]]; then
+            echo "Testing SSH to ${NODES[$i]} (${IPS[$i]})..."
+            ssh -o ConnectTimeout=5 -o BatchMode=yes $SSH_USER@${IPS[$i]} "echo 'SSH OK'" || {
+                echo "ERROR: Cannot SSH to ${NODES[$i]} (${IPS[$i]})"
+                echo "Please ensure:"
+                echo "  1. SSH key is properly configured"
+                echo "  2. Host is reachable"
+                echo "  3. SSH service is running on target host"
+                exit 1
+            }
+            verify_os ${IPS[$i]}
+        fi
     done
     echo "SSH connectivity test completed successfully"
 }
@@ -154,6 +215,11 @@ install_node() {
     if [[ "$LOCAL_DEPLOYMENT" == "true" ]]; then
         FILE_PREFIX="$LOCAL_FILES_PATH/"
         EXEC_PREFIX=""
+    elif [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+        FILE_PREFIX="/tmp/files/"
+        local ports=(12222 12223 12224)
+        local port=${ports[$((node_id-1))]}
+        EXEC_PREFIX="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=$port -i ~/.ssh/kafka_test_key $SSH_USER@localhost"
     else
         FILE_PREFIX="/tmp/"
         EXEC_PREFIX="ssh $SSH_USER@$node_ip"
@@ -193,13 +259,32 @@ install_node() {
         
         echo "Cleaning up existing installations..."
         sudo rm -rf /opt/kafka /opt/confluent-* /opt/jdk-* 2>/dev/null || true
+        sudo rm -rf $DATA_DIR $LOG_DIR 2>/dev/null || true
         
-        # Extract JDK if not already extracted
-        if [[ ! -d "$JAVA_HOME" ]]; then
-            echo "Extracting JDK from ${FILE_PREFIX}$JDK_ARCHIVE..."
+        # Install Java for Docker/Linux environments
+        if [[ "\$(uname)" != "Darwin" ]]; then
+            echo "Installing Java 21 from offline tarball..."
             cd /opt
-            sudo tar -xzf ${FILE_PREFIX}$JDK_ARCHIVE
-            echo "JDK extracted successfully"
+            tar -xzf ${FILE_PREFIX}jdk-21_linux-aarch64_bin.tar.gz
+            
+            # Find the actual JDK directory using ls
+            JDK_DIR=\$(ls -d /opt/jdk-21* 2>/dev/null | head -1)
+            if [[ -n "\$JDK_DIR" ]]; then
+                export JAVA_HOME=\$JDK_DIR
+                echo "Java 21 installed successfully at \$JAVA_HOME"
+            else
+                echo "ERROR: Could not find JDK directory after extraction"
+                ls -la /opt/
+                exit 1
+            fi
+        else
+            # Extract JDK if not already extracted (macOS)
+            if [[ ! -d "$JAVA_HOME" ]]; then
+                echo "Extracting JDK from ${FILE_PREFIX}$JDK_ARCHIVE..."
+                cd /opt
+                sudo tar -xzf ${FILE_PREFIX}$JDK_ARCHIVE
+                echo "JDK extracted successfully"
+            fi
         fi
         
         # Create directories
@@ -212,13 +297,17 @@ install_node() {
         cd /opt
         sudo unzip -q ${FILE_PREFIX}$CONFLUENT_ZIP
         
-        # Handle different extraction patterns - the ZIP extracts to confluent-8.0.0/
-        if [[ -d "confluent-community-8.0.0" ]]; then
-            sudo mv confluent-community-8.0.0 kafka
-        elif [[ -d "confluent-8.0.0" ]]; then
-            sudo mv confluent-8.0.0 kafka
+        # Handle different extraction patterns - find the confluent directory using ls
+        CONFLUENT_DIR=\$(ls -d confluent* 2>/dev/null | head -1)
+        if [[ -n "\$CONFLUENT_DIR" ]]; then
+            echo "Found Confluent directory: \$CONFLUENT_DIR"
+            # Move contents of confluent directory to kafka, not the directory itself
+            sudo mv "\$CONFLUENT_DIR"/* kafka/
+            sudo rmdir "\$CONFLUENT_DIR"
+            echo "Contents of /opt/kafka after move:"
+            ls -la /opt/kafka
         else
-            echo "ERROR: Unexpected directory structure after extraction"
+            echo "ERROR: No confluent directory found after extraction"
             echo "Available directories:"
             ls -la
             exit 1
@@ -226,13 +315,36 @@ install_node() {
         
         sudo chown -R $KAFKA_USER:$KAFKA_GROUP /opt/kafka
         
-        echo "Generating cluster UUID..."
-        CLUSTER_UUID=\$(sudo -u $KAFKA_USER JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-storage random-uuid)
-        echo "Cluster UUID: \$CLUSTER_UUID"
+        # Set JAVA_HOME for different environments
+        if [[ "\$(uname)" != "Darwin" ]]; then
+            # Find the JDK directory using ls
+            JDK_DIR=\$(ls -d /opt/jdk-21* 2>/dev/null | head -1)
+            if [[ -n "\$JDK_DIR" ]]; then
+                export JAVA_HOME=\$JDK_DIR
+            else
+                echo "ERROR: Could not find JDK directory"
+                exit 1
+            fi
+        fi
+        
+        # Find the kafka-storage script
+        KAFKA_STORAGE_SCRIPT="/opt/kafka/bin/kafka-storage"
+        if [[ ! -f "\$KAFKA_STORAGE_SCRIPT" ]]; then
+            echo "ERROR: kafka-storage script not found at \$KAFKA_STORAGE_SCRIPT"
+            echo "Available files in /opt/kafka/bin:"
+            ls -la /opt/kafka/bin/ 2>/dev/null || echo "No /opt/kafka/bin directory"
+            exit 1
+        fi
+        
+        echo "Using kafka-storage script: \$KAFKA_STORAGE_SCRIPT"
+        
+        # Use shared cluster UUID for all nodes
+        CLUSTER_UUID="$SHARED_CLUSTER_UUID"
+        echo "Using shared cluster UUID: \$CLUSTER_UUID"
         
         # Build quorum voters list
         QUORUM_VOTERS=""
-        for ((j=1; j<=SERVER_COUNT; j++)); do
+        for ((j=1; j<=$SERVER_COUNT; j++)); do
             if [[ \$j -gt 1 ]]; then
                 QUORUM_VOTERS="\${QUORUM_VOTERS},"
             fi
@@ -274,8 +386,13 @@ EOC
         
         echo "Formatting Kafka storage for KRaft mode..."
         
+        # Ensure clean data directory
+        sudo rm -rf $DATA_DIR/logs/* 2>/dev/null || true
+        sudo mkdir -p $DATA_DIR/logs
+        sudo chown -R $KAFKA_USER:$KAFKA_GROUP $DATA_DIR
+        
         # Format storage
-        sudo -u $KAFKA_USER JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-storage format -t \$CLUSTER_UUID -c /opt/kafka/etc/kafka/server.properties
+        sudo -u $KAFKA_USER JAVA_HOME=\$JAVA_HOME \$KAFKA_STORAGE_SCRIPT format -t \$CLUSTER_UUID -c /opt/kafka/etc/kafka/server.properties
         
         echo "Storage formatting completed successfully"
         
@@ -296,6 +413,10 @@ start_services() {
     echo "Starting Kafka services..."
     
     for i in "${!NODES[@]}"; do
+        if [[ $i -ge $SERVER_COUNT ]]; then
+            continue
+        fi
+        
         local node_ip=${IPS[$i]}
         local node_name=${NODES[$i]}
         
@@ -364,6 +485,43 @@ EOS
                 sleep 2
                 ((attempt++))
             done
+        elif [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+            # Docker deployment - start Kafka directly
+            local ports=(12222 12223 12224)
+            local port=${ports[$i]}
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=$port -i ~/.ssh/kafka_test_key $SSH_USER@localhost << 'EOF'
+                # Find JDK directory
+                JDK_DIR=$(ls -d /opt/jdk-21* 2>/dev/null | head -1)
+                if [[ -n "$JDK_DIR" ]]; then
+                    export JAVA_HOME=$JDK_DIR
+                else
+                    echo "ERROR: Could not find JDK directory"
+                    exit 1
+                fi
+                
+                echo "Starting Kafka server directly..."
+                
+                # Start Kafka in background
+                nohup sudo -u kafka JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-server-start /opt/kafka/etc/kafka/server.properties > /var/log/confluent/kafka/kafka.log 2>&1 &
+                
+                # Wait for Kafka to start
+                echo "Waiting for Kafka to start..."
+                for attempt in {1..30}; do
+                    if netstat -ln 2>/dev/null | grep -q ":9092.*LISTEN" || ss -ln 2>/dev/null | grep -q ":9092"; then
+                        echo "Kafka started successfully on port 9092"
+                        break
+                    fi
+                    
+                    if [ $attempt -eq 30 ]; then
+                        echo "ERROR: Kafka failed to start within 60 seconds"
+                        echo "Last 20 lines of Kafka log:"
+                        tail -20 /var/log/confluent/kafka/kafka.log 2>/dev/null || echo "No log file found"
+                        exit 1
+                    fi
+                    
+                    sleep 2
+                done
+EOF
         else
             # Production deployment - use systemd
             ssh $SSH_USER@$node_ip << 'EOF'
@@ -413,17 +571,25 @@ copy_files() {
         return 0
     fi
     
+    if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+        echo "Docker deployment - files already mounted in containers"
+        return 0
+    fi
+    
     echo "Copying installation files..."
-    for ip in "${IPS[@]}"; do
-        echo "Copying files to $ip..."
-        scp "$LOCAL_FILES_PATH/$CONFLUENT_ZIP" $SSH_USER@$ip:/tmp/ || {
-            echo "ERROR: Failed to copy $CONFLUENT_ZIP to $ip"
-            exit 1
-        }
-        scp "$LOCAL_FILES_PATH/$JDK_ARCHIVE" $SSH_USER@$ip:/tmp/ || {
-            echo "ERROR: Failed to copy $JDK_ARCHIVE to $ip"
-            exit 1
-        }
+    for i in "${!IPS[@]}"; do
+        if [[ $i -lt $SERVER_COUNT ]]; then
+            local ip=${IPS[$i]}
+            echo "Copying files to $ip..."
+            scp "$LOCAL_FILES_PATH/$CONFLUENT_ZIP" $SSH_USER@$ip:/tmp/ || {
+                echo "ERROR: Failed to copy $CONFLUENT_ZIP to $ip"
+                exit 1
+            }
+            scp "$LOCAL_FILES_PATH/jdk-21_linux-aarch64_bin.tar.gz" $SSH_USER@$ip:/tmp/ || {
+                echo "ERROR: Failed to copy Java tarball to $ip"
+                exit 1
+            }
+        fi
     done
     echo "File copying completed successfully"
 }
@@ -450,6 +616,12 @@ verify_cluster() {
             echo "WARNING: Could not retrieve cluster metadata, but broker is responding"
         }
         echo "✅ Cluster metadata is accessible"
+    elif [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=12222 -i ~/.ssh/kafka_test_key $SSH_USER@localhost "JDK_DIR=\$(ls -d /opt/jdk-21* 2>/dev/null | head -1); JAVA_HOME=\$JDK_DIR /opt/kafka/bin/kafka-broker-api-versions --bootstrap-server kafka-${ENVIRONMENT}-node-1:$PLAINTEXT_PORT" || {
+            echo "ERROR: Cluster verification failed"
+            exit 1
+        }
+        echo "✅ Docker cluster is responding"
     else
         ssh $SSH_USER@${IPS[0]} "JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-broker-api-versions --bootstrap-server kafka-${ENVIRONMENT}-node-1:$PLAINTEXT_PORT" || {
             echo "ERROR: Cluster verification failed"
@@ -475,6 +647,16 @@ echo ""
 validate_prerequisites
 test_ssh
 copy_files
+
+# Generate shared cluster UUID for all nodes
+echo "Generating shared cluster UUID..."
+if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+    SHARED_CLUSTER_UUID=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=12222 -i ~/.ssh/kafka_test_key root@localhost "JDK_DIR=\$(ls -d /opt/jdk-21* 2>/dev/null | head -1); JAVA_HOME=\$JDK_DIR /opt/kafka/bin/kafka-storage random-uuid")
+else
+    SHARED_CLUSTER_UUID=$(JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-storage random-uuid)
+fi
+echo "Shared cluster UUID: $SHARED_CLUSTER_UUID"
+export SHARED_CLUSTER_UUID
 
 echo "Installing nodes..."
 for i in "${!NODES[@]}"; do

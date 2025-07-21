@@ -1,0 +1,92 @@
+services:
+  kafka-node-1:
+    image: rockylinux:8
+    hostname: kafka-test-node-1
+    container_name: kafka-node-1
+    networks:
+      kafka-net:
+        ipv4_address: 192.168.1.10
+    ports:
+      - "19092:9092"
+      - "19093:9093"
+      - "18080:8080"
+      - "12222:22"
+    volumes:
+      - ./deployment-files:/tmp/files
+      - ./src/deployment-scripts:/tmp/scripts
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    command: >
+      bash -c "
+        yum update -y &&
+        yum install -y openssh-server sudo unzip systemd &&
+        ssh-keygen -A &&
+        echo 'root:password' | chpasswd &&
+        sed -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+        sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+        systemctl enable sshd &&
+        exec /usr/sbin/init
+      "
+    privileged: true
+
+  kafka-node-2:
+    image: rockylinux:8
+    hostname: kafka-test-node-2
+    container_name: kafka-node-2
+    networks:
+      kafka-net:
+        ipv4_address: 192.168.1.11
+    ports:
+      - "19094:9092"
+      - "19095:9093"
+      - "12223:22"
+    volumes:
+      - ./deployment-files:/tmp/files
+      - ./src/deployment-scripts:/tmp/scripts
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    command: >
+      bash -c "
+        yum update -y &&
+        yum install -y openssh-server sudo unzip systemd &&
+        ssh-keygen -A &&
+        echo 'root:password' | chpasswd &&
+        sed -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+        sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+        systemctl enable sshd &&
+        exec /usr/sbin/init
+      "
+    privileged: true
+
+  kafka-node-3:
+    image: rockylinux:8
+    hostname: kafka-test-node-3
+    container_name: kafka-node-3
+    networks:
+      kafka-net:
+        ipv4_address: 192.168.1.12
+    ports:
+      - "19096:9092"
+      - "19097:9093"
+      - "12224:22"
+    volumes:
+      - ./deployment-files:/tmp/files
+      - ./src/deployment-scripts:/tmp/scripts
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    command: >
+      bash -c "
+        yum update -y &&
+        yum install -y openssh-server sudo unzip systemd &&
+        ssh-keygen -A &&
+        echo 'root:password' | chpasswd &&
+        sed -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+        sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+        systemctl enable sshd &&
+        exec /usr/sbin/init
+      "
+    privileged: true
+
+networks:
+  kafka-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.1.0/24
