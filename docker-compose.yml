@@ -1,108 +1,99 @@
 services:
-  kafka-node-1:
-    image: rockylinux:8
-    hostname: kafka-test-node-1
-    container_name: kafka-node-1
+  kafka-test-node1:
+    image: registry.access.redhat.com/ubi8/ubi:latest
+    hostname: kafka-test-node1
+    container_name: kafka-test-node1
     networks:
-      kafka-net:
+      servers-net:
         ipv4_address: 192.168.1.10
     ports:
-      - "19092:9092"
-      - "19093:9093"
-      - "12222:22"
+      - "2221:22"
     volumes:
-      - ./deployment-files:/tmp/files
-      - ./src/deployment-scripts:/tmp/scripts
-      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    environment:
+      - SSH_USER=admin
+      - SSH_PASSWORD=password123
     command: >
       bash -c "
-        yum update -y &&
-        yum install -y openssh-server sudo unzip systemd &&
+        dnf update -y &&
+        dnf install -y openssh-server sudo passwd hostname util-linux procps-ng &&
         ssh-keygen -A &&
-        echo 'root:password' | chpasswd &&
-        sed -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+        useradd -m -s /bin/bash admin &&
+        echo 'admin:password123' | chpasswd &&
+        echo 'root:rootpassword' | chpasswd &&
+        usermod -aG wheel admin &&
+        sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config &&
         sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
-        systemctl enable sshd &&
-        exec /usr/sbin/init
+        sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+        echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config &&
+        /usr/sbin/sshd &&
+        tail -f /dev/null
       "
-    privileged: true
 
-  kafka-node-2:
-    image: rockylinux:8
-    hostname: kafka-test-node-2
-    container_name: kafka-node-2
+  kafka-test-node2:
+    image: registry.access.redhat.com/ubi8/ubi:latest
+    hostname: kafka-test-node2
+    container_name: kafka-test-node2
     networks:
-      kafka-net:
+      servers-net:
         ipv4_address: 192.168.1.11
     ports:
-      - "19094:9092"
-      - "19095:9093"
-      - "12223:22"
+      - "2222:22"
     volumes:
-      - ./deployment-files:/tmp/files
-      - ./src/deployment-scripts:/tmp/scripts
-      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    environment:
+      - SSH_USER=admin
+      - SSH_PASSWORD=password123
     command: >
       bash -c "
-        yum update -y &&
-        yum install -y openssh-server sudo unzip systemd &&
+        dnf update -y &&
+        dnf install -y openssh-server sudo passwd hostname util-linux procps-ng &&
         ssh-keygen -A &&
-        echo 'root:password' | chpasswd &&
-        sed -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+        useradd -m -s /bin/bash admin &&
+        echo 'admin:password123' | chpasswd &&
+        echo 'root:rootpassword' | chpasswd &&
+        usermod -aG wheel admin &&
+        sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config &&
         sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
-        systemctl enable sshd &&
-        exec /usr/sbin/init
+        sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+        echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config &&
+        /usr/sbin/sshd &&
+        tail -f /dev/null
       "
-    privileged: true
 
-  kafka-node-3:
-    image: rockylinux:8
-    hostname: kafka-test-node-3
-    container_name: kafka-node-3
+  kafka-test-node3:
+    image: registry.access.redhat.com/ubi8/ubi:latest
+    hostname: kafka-test-node3
+    container_name: kafka-test-node3
     networks:
-      kafka-net:
+      servers-net:
         ipv4_address: 192.168.1.12
     ports:
-      - "19096:9092"
-      - "19097:9093"
-      - "12224:22"
+      - "2223:22"
     volumes:
-      - ./deployment-files:/tmp/files
-      - ./src/deployment-scripts:/tmp/scripts
-      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    environment:
+      - SSH_USER=admin
+      - SSH_PASSWORD=password123
     command: >
       bash -c "
-        yum update -y &&
-        yum install -y openssh-server sudo unzip systemd &&
+        dnf update -y &&
+        dnf install -y openssh-server sudo passwd hostname util-linux procps-ng &&
         ssh-keygen -A &&
-        echo 'root:password' | chpasswd &&
-        sed -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+        useradd -m -s /bin/bash admin &&
+        echo 'admin:password123' | chpasswd &&
+        echo 'root:rootpassword' | chpasswd &&
+        usermod -aG wheel admin &&
+        sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config &&
         sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
-        systemctl enable sshd &&
-        exec /usr/sbin/init
+        sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+        echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config &&
+        /usr/sbin/sshd &&
+        tail -f /dev/null
       "
-    privileged: true
-
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: kafka-ui
-    hostname: kafka-ui
-    networks:
-      kafka-net:
-        ipv4_address: 192.168.1.20
-    ports:
-      - "18080:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: test-cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-test-node-1:9092,kafka-test-node-2:9092,kafka-test-node-3:9092
-      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: PLAINTEXT
-    depends_on:
-      - kafka-node-1
-      - kafka-node-2
-      - kafka-node-3
 
 networks:
-  kafka-net:
+  servers-net:
     driver: bridge
     ipam:
       config:
