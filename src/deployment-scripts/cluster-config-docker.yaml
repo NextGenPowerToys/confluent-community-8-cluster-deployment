@@ -34,8 +34,9 @@ storage:
 installation:
   local_files_path: "/tmp/files"
   confluent_archive: "confluent-community-8.0.0.zip"
-  kafka_ui_jar: "provectus-kafka-ui.jar"
   java_archive: "openjdk-11.0.2.tar.gz"
+  kafka_ui_enabled: true
+  kafka_ui_url: "http://localhost:8080"
 
 defaults:
   partitions_per_topic: 24

@@ -123,6 +123,22 @@ wait_for_container() {
     
     print_status "Waiting for container $container to be ready..."
     
+    # Skip SSH checks for kafka-ui since it doesn't need SSH
+    if [[ "$container" == "kafka-ui" ]]; then
+        while [ $attempt -le $max_attempts ]; do
+            if docker exec "$container" echo "Container ready" >/dev/null 2>&1; then
+                print_status "Container $container is ready (Web UI)"
+                return 0
+            fi
+            echo -n "."
+            sleep 3
+            ((attempt++))
+        done
+        print_error "Container $container failed to become ready after $((max_attempts * 3)) seconds"
+        return 1
+    fi
+    
+    # Regular SSH check for Kafka nodes
     while [ $attempt -le $max_attempts ]; do
         if docker exec "$container" echo "Container ready" >/dev/null 2>&1; then
             # Additional check - ensure SSH packages are installed
@@ -148,6 +164,12 @@ configure_ssh() {
     local container=$1
     local max_retries=3
     local retry=1
+    
+    # Skip SSH configuration for kafka-ui since it doesn't need SSH
+    if [[ "$container" == "kafka-ui" ]]; then
+        print_status "Skipping SSH configuration for $container (Web UI container)"
+        return 0
+    fi
     
     print_status "Configuring SSH on $container..."
     
