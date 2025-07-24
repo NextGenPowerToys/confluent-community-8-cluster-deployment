@@ -8,6 +8,12 @@ services:
         ipv4_address: 192.168.1.10
     ports:
       - "2221:22"
+      - "9092:9092"
+      - "9093:9093"
+    extra_hosts:
+      - "kafka-test-node1:192.168.1.10"
+      - "kafka-test-node2:192.168.1.11"
+      - "kafka-test-node3:192.168.1.12"
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     environment:
@@ -39,6 +45,12 @@ services:
         ipv4_address: 192.168.1.11
     ports:
       - "2222:22"
+      - "9094:9092"
+      - "9095:9093"
+    extra_hosts:
+      - "kafka-test-node1:192.168.1.10"
+      - "kafka-test-node2:192.168.1.11"
+      - "kafka-test-node3:192.168.1.12"
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     environment:
@@ -70,6 +82,12 @@ services:
         ipv4_address: 192.168.1.12
     ports:
       - "2223:22"
+      - "9096:9092"
+      - "9097:9093"
+    extra_hosts:
+      - "kafka-test-node1:192.168.1.10"
+      - "kafka-test-node2:192.168.1.11"
+      - "kafka-test-node3:192.168.1.12"
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     environment:

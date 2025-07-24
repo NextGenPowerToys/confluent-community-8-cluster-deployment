@@ -350,13 +350,17 @@ install_node() {
     if [[ "$LOCAL_DEPLOYMENT" == "true" ]]; then
         FILE_PREFIX="$LOCAL_FILES_PATH/"
         EXEC_PREFIX=""
+        SUDO_CMD="sudo"
     elif [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
         FILE_PREFIX="/tmp/"
         ssh_port=${SSH_PORTS[$((node_id-1))]}
-        EXEC_PREFIX="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port $SSH_USER@localhost"
+        EXEC_PREFIX="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port root@localhost"
+        # For Docker deployment using root, no sudo needed
+        SUDO_CMD=""
     else
         FILE_PREFIX="/tmp/"
         EXEC_PREFIX="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $SSH_USER@$node_ip"
+        SUDO_CMD="sudo"
     fi
     
     $EXEC_PREFIX bash << EOF
@@ -368,43 +372,44 @@ install_node() {
         if [[ "\$(uname)" == "Darwin" ]]; then
             # macOS user creation
             if ! dscl . -read /Groups/$KAFKA_GROUP >/dev/null 2>&1; then
-                sudo dscl . -create /Groups/$KAFKA_GROUP
-                sudo dscl . -create /Groups/$KAFKA_GROUP PrimaryGroupID 502
+                ${SUDO_CMD:+$SUDO_CMD} dscl . -create /Groups/$KAFKA_GROUP
+                ${SUDO_CMD:+$SUDO_CMD} dscl . -create /Groups/$KAFKA_GROUP PrimaryGroupID 502
             fi
             
             if ! dscl . -read /Users/$KAFKA_USER >/dev/null 2>&1; then
-                sudo dscl . -create /Users/$KAFKA_USER
-                sudo dscl . -create /Users/$KAFKA_USER UserShell /bin/false
-                sudo dscl . -create /Users/$KAFKA_USER RealName "Kafka User"
-                sudo dscl . -create /Users/$KAFKA_USER UniqueID 502
-                sudo dscl . -create /Users/$KAFKA_USER PrimaryGroupID 502
-                sudo dscl . -create /Users/$KAFKA_USER NFSHomeDirectory /opt/kafka
+                ${SUDO_CMD:+$SUDO_CMD} dscl . -create /Users/$KAFKA_USER
+                ${SUDO_CMD:+$SUDO_CMD} dscl . -create /Users/$KAFKA_USER UserShell /bin/false
+                ${SUDO_CMD:+$SUDO_CMD} dscl . -create /Users/$KAFKA_USER RealName "Kafka User"
+                ${SUDO_CMD:+$SUDO_CMD} dscl . -create /Users/$KAFKA_USER UniqueID 502
+                ${SUDO_CMD:+$SUDO_CMD} dscl . -create /Users/$KAFKA_USER PrimaryGroupID 502
+                ${SUDO_CMD:+$SUDO_CMD} dscl . -create /Users/$KAFKA_USER NFSHomeDirectory /opt/kafka
             fi
         else
             # Linux user creation
             if ! getent group $KAFKA_GROUP >/dev/null 2>&1; then
-                sudo groupadd -r $KAFKA_GROUP
+                ${SUDO_CMD:+$SUDO_CMD} groupadd -r $KAFKA_GROUP
             fi
             
             if ! id $KAFKA_USER >/dev/null 2>&1; then
-                sudo useradd -r -g $KAFKA_GROUP -s /bin/false -d /opt/kafka $KAFKA_USER
+                ${SUDO_CMD:+$SUDO_CMD} useradd -r -g $KAFKA_GROUP -s /bin/false -d /opt/kafka $KAFKA_USER
             fi
         fi
         
         echo "Cleaning up existing installations..."
-        sudo rm -rf /opt/kafka /opt/confluent-* /opt/jdk-* 2>/dev/null || true
-        sudo rm -rf $DATA_DIR $LOG_DIR 2>/dev/null || true
+        ${SUDO_CMD:+$SUDO_CMD} rm -rf /opt/kafka /opt/confluent-* /opt/jdk-* 2>/dev/null || true
+        ${SUDO_CMD:+$SUDO_CMD} rm -rf $DATA_DIR $LOG_DIR 2>/dev/null || true
         
         # Install Java for Docker/Linux environments
         if [[ "\$(uname)" != "Darwin" ]]; then
             echo "Installing Java 21 from offline tarball..."
             cd /opt
-            tar -xzf ${FILE_PREFIX}jdk-21_linux-aarch64_bin.tar.gz
+            ${SUDO_CMD:+$SUDO_CMD} tar -xzf ${FILE_PREFIX}jdk-21_linux-aarch64_bin.tar.gz
             
             # Find the actual JDK directory using ls
             JDK_DIR=\$(ls -d /opt/jdk-21* 2>/dev/null | head -1)
             if [[ -n "\$JDK_DIR" ]]; then
                 export JAVA_HOME=\$JDK_DIR
+                ${SUDO_CMD:+$SUDO_CMD} chown -R root:root \$JDK_DIR 2>/dev/null || true
                 echo "Java 21 installed successfully at \$JAVA_HOME"
             else
                 echo "ERROR: Could not find JDK directory after extraction"
@@ -416,28 +421,28 @@ install_node() {
             if [[ ! -d "$JAVA_HOME" ]]; then
                 echo "Extracting JDK from ${FILE_PREFIX}$JDK_ARCHIVE..."
                 cd /opt
-                sudo tar -xzf ${FILE_PREFIX}$JDK_ARCHIVE
+                ${SUDO_CMD:+$SUDO_CMD} tar -xzf ${FILE_PREFIX}$JDK_ARCHIVE
                 echo "JDK extracted successfully"
             fi
         fi
         
         # Create directories
-        sudo mkdir -p /opt/kafka $DATA_DIR/logs $LOG_DIR/kafka
-        sudo chown -R $KAFKA_USER:$KAFKA_GROUP $DATA_DIR $LOG_DIR 2>/dev/null || true
+        ${SUDO_CMD:+$SUDO_CMD} mkdir -p /opt/kafka $DATA_DIR/logs $LOG_DIR/kafka
+        ${SUDO_CMD:+$SUDO_CMD} chown -R $KAFKA_USER:$KAFKA_GROUP $DATA_DIR $LOG_DIR 2>/dev/null || true
         
         echo "Extracting Confluent Community $CONFLUENT_ZIP..."
         
         # Extract Confluent
         cd /opt
-        sudo unzip -q ${FILE_PREFIX}$CONFLUENT_ZIP
+        ${SUDO_CMD:+$SUDO_CMD} unzip -q ${FILE_PREFIX}$CONFLUENT_ZIP
         
         # Handle different extraction patterns - find the confluent directory using ls
         CONFLUENT_DIR=\$(ls -d confluent* 2>/dev/null | head -1)
         if [[ -n "\$CONFLUENT_DIR" ]]; then
             echo "Found Confluent directory: \$CONFLUENT_DIR"
             # Move contents of confluent directory to kafka, not the directory itself
-            sudo mv "\$CONFLUENT_DIR"/* kafka/
-            sudo rmdir "\$CONFLUENT_DIR"
+            ${SUDO_CMD:+$SUDO_CMD} mv "\$CONFLUENT_DIR"/* kafka/
+            ${SUDO_CMD:+$SUDO_CMD} rmdir "\$CONFLUENT_DIR"
             echo "Contents of /opt/kafka after move:"
             ls -la /opt/kafka
         else
@@ -447,7 +452,7 @@ install_node() {
             exit 1
         fi
         
-        sudo chown -R $KAFKA_USER:$KAFKA_GROUP /opt/kafka
+        ${SUDO_CMD:+$SUDO_CMD} chown -R $KAFKA_USER:$KAFKA_GROUP /opt/kafka
         
         # Set JAVA_HOME for different environments
         if [[ "\$(uname)" != "Darwin" ]]; then
@@ -476,26 +481,48 @@ install_node() {
         CLUSTER_UUID="$SHARED_CLUSTER_UUID"
         echo "Using shared cluster UUID: \$CLUSTER_UUID"
         
-        # Build quorum voters list
+        # Set the correct hostname for advertised listeners
+        if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+            # Use localhost with mapped ports for Docker deployment external access
+            case $node_id in
+                1) ADVERTISED_HOSTNAME="localhost" ; ADVERTISED_PORT="9092" ;;
+                2) ADVERTISED_HOSTNAME="localhost" ; ADVERTISED_PORT="9094" ;;
+                3) ADVERTISED_HOSTNAME="localhost" ; ADVERTISED_PORT="9096" ;;
+            esac
+        else
+            ADVERTISED_HOSTNAME="${NODES[$((node_id-1))]}"
+            ADVERTISED_PORT="$PLAINTEXT_PORT"
+        fi
+        echo "Advertised hostname: \$ADVERTISED_HOSTNAME:\$ADVERTISED_PORT"
+        
+        # Build quorum voters list - use container hostnames for Docker deployment
         QUORUM_VOTERS=""
         for ((j=1; j<=$SERVER_COUNT; j++)); do
             if [[ \$j -gt 1 ]]; then
                 QUORUM_VOTERS="\${QUORUM_VOTERS},"
             fi
-            QUORUM_VOTERS="\${QUORUM_VOTERS}\${j}@kafka-${ENVIRONMENT}-node-\${j}:$CONTROLLER_PORT"
+            
+            if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+                # Use actual container hostnames for Docker deployment
+                container_hostname="kafka-test-node\${j}"
+                QUORUM_VOTERS="\${QUORUM_VOTERS}\${j}@\${container_hostname}:$CONTROLLER_PORT"
+            else
+                QUORUM_VOTERS="\${QUORUM_VOTERS}\${j}@kafka-${ENVIRONMENT}-node-\${j}:$CONTROLLER_PORT"
+            fi
         done
         echo "Quorum voters: \$QUORUM_VOTERS"
         
         echo "Creating Kafka server configuration..."
         
         # Create server.properties
-        sudo -u $KAFKA_USER tee /opt/kafka/etc/kafka/server.properties > /dev/null << EOC
+        if [[ -n "$SUDO_CMD" ]]; then
+            ${SUDO_CMD:+$SUDO_CMD} -u $KAFKA_USER tee /opt/kafka/etc/kafka/server.properties > /dev/null << EOC
 process.roles=controller,broker
 node.id=$node_id
 controller.quorum.voters=\$QUORUM_VOTERS
 listeners=PLAINTEXT://:$PLAINTEXT_PORT,CONTROLLER://:$CONTROLLER_PORT
 inter.broker.listener.name=PLAINTEXT
-advertised.listeners=PLAINTEXT://${NODES[$((node_id-1))]}:$PLAINTEXT_PORT
+advertised.listeners=PLAINTEXT://\${ADVERTISED_HOSTNAME}:\${ADVERTISED_PORT}
 controller.listener.names=CONTROLLER
 listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
 num.network.threads=8
@@ -515,18 +542,54 @@ log.cleanup.policy=delete
 log.segment.bytes=1073741824
 log.retention.check.interval.ms=300000
 EOC
+        else
+            # Running as root, create file directly
+            tee /opt/kafka/etc/kafka/server.properties > /dev/null << EOC
+process.roles=controller,broker
+node.id=$node_id
+controller.quorum.voters=\$QUORUM_VOTERS
+listeners=PLAINTEXT://:$PLAINTEXT_PORT,CONTROLLER://:$CONTROLLER_PORT
+inter.broker.listener.name=PLAINTEXT
+advertised.listeners=PLAINTEXT://\${ADVERTISED_HOSTNAME}:\${ADVERTISED_PORT}
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+num.network.threads=8
+num.io.threads=16
+socket.send.buffer.bytes=102400
+socket.receive.buffer.bytes=102400
+socket.request.max.bytes=104857600
+log.dirs=$DATA_DIR/logs
+num.partitions=$PARTITIONS_PER_TOPIC
+default.replication.factor=$REPLICATION_FACTOR
+min.insync.replicas=$MIN_INSYNC_REPLICAS
+auto.create.topics.enable=$AUTO_CREATE_TOPICS
+delete.topic.enable=true
+log.retention.ms=\$(($RETENTION_HOURS * 3600000))
+log.segment.ms=\$(($SEGMENT_RETENTION_HOURS * 3600000))
+log.cleanup.policy=delete
+log.segment.bytes=1073741824
+log.retention.check.interval.ms=300000
+EOC
+            # Change ownership after creating the file
+            chown $KAFKA_USER:$KAFKA_GROUP /opt/kafka/etc/kafka/server.properties
+        fi
         
         echo "Server configuration created successfully"
         
         echo "Formatting Kafka storage for KRaft mode..."
         
         # Ensure clean data directory
-        sudo rm -rf $DATA_DIR/logs/* 2>/dev/null || true
-        sudo mkdir -p $DATA_DIR/logs
-        sudo chown -R $KAFKA_USER:$KAFKA_GROUP $DATA_DIR
+        ${SUDO_CMD:+$SUDO_CMD} rm -rf $DATA_DIR/logs/* 2>/dev/null || true
+        ${SUDO_CMD:+$SUDO_CMD} mkdir -p $DATA_DIR/logs
+        ${SUDO_CMD:+$SUDO_CMD} chown -R $KAFKA_USER:$KAFKA_GROUP $DATA_DIR
         
         # Format storage
-        sudo -u $KAFKA_USER JAVA_HOME=\$JAVA_HOME \$KAFKA_STORAGE_SCRIPT format -t \$CLUSTER_UUID -c /opt/kafka/etc/kafka/server.properties
+        if [[ -n "$SUDO_CMD" ]]; then
+            ${SUDO_CMD:+$SUDO_CMD} -u $KAFKA_USER JAVA_HOME=\$JAVA_HOME \$KAFKA_STORAGE_SCRIPT format -t \$CLUSTER_UUID -c /opt/kafka/etc/kafka/server.properties
+        else
+            # Running as root, run directly then change ownership
+            su - $KAFKA_USER -s /bin/bash -c "JAVA_HOME=\$JAVA_HOME \$KAFKA_STORAGE_SCRIPT format -t \$CLUSTER_UUID -c /opt/kafka/etc/kafka/server.properties"
+        fi
         
         echo "Storage formatting completed successfully"
         
@@ -547,7 +610,7 @@ start_services() {
     echo "Starting Kafka services simultaneously..."
     
     if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
-        # Start all Docker nodes simultaneously in background
+        # Start all Docker nodes sequentially to avoid SSH password conflicts
         for i in "${!NODES[@]}"; do
             if [[ $i -ge $SERVER_COUNT ]]; then
                 continue
@@ -556,9 +619,10 @@ start_services() {
             node_name=${NODES[$i]}
             ssh_port=${SSH_PORTS[$i]}
             
-            echo "Starting Kafka on $node_name in background..."
+            echo "Starting Kafka on $node_name..."
             
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port $SSH_USER@localhost << 'EOF' &
+            # Start Kafka service on this node
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -p $ssh_port $SSH_USER@localhost << 'EOF'
                 # Find JDK directory
                 JDK_DIR=$(ls -d /opt/jdk-21* 2>/dev/null | head -1)
                 if [[ -n "$JDK_DIR" ]]; then
@@ -568,17 +632,32 @@ start_services() {
                     exit 1
                 fi
                 
-                echo "Starting Kafka server directly..."
+                echo "Starting Kafka server..."
                 
                 # Start Kafka in background
-                nohup sudo -u kafka JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-server-start /opt/kafka/etc/kafka/server.properties > /var/log/confluent/kafka/kafka.log 2>&1 &
+                if [[ -n "${SUDO_CMD}" ]]; then
+                    nohup ${SUDO_CMD:+$SUDO_CMD} -u kafka JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-server-start /opt/kafka/etc/kafka/server.properties > /var/log/confluent/kafka/kafka.log 2>&1 &
+                else
+                    # Running as root, use su to run as kafka user
+                    nohup su - kafka -s /bin/bash -c "JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-server-start /opt/kafka/etc/kafka/server.properties" > /var/log/confluent/kafka/kafka.log 2>&1 &
+                fi
+                
+                echo "Kafka startup command executed, waiting for service to initialize..."
+                sleep 5
 EOF
+            
+            if [ $? -eq 0 ]; then
+                echo "✅ Kafka startup command executed successfully on $node_name"
+            else
+                echo "❌ Failed to start Kafka on $node_name"
+                exit 1
+            fi
         done
         
-        echo "Waiting for all Kafka nodes to start..."
+        echo "Waiting for all Kafka nodes to fully initialize..."
         sleep 30
         
-        # Check if all nodes are running
+        # Check if all nodes are running - with retry logic
         for i in "${!NODES[@]}"; do
             if [[ $i -ge $SERVER_COUNT ]]; then
                 continue
@@ -587,25 +666,52 @@ EOF
             node_name=${NODES[$i]}  
             ssh_port=${SSH_PORTS[$i]}
             
-            echo "Checking Kafka on $node_name..."
+            echo "Checking Kafka status on $node_name..."
             
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port $SSH_USER@localhost << 'EOF'
-                for attempt in {1..30}; do
-                    if netstat -ln 2>/dev/null | grep -q ":9092.*LISTEN" || ss -ln 2>/dev/null | grep -q ":9092"; then
-                        echo "Kafka started successfully on port 9092"
-                        exit 0
-                    fi
-                    
-                    if [ $attempt -eq 30 ]; then
-                        echo "ERROR: Kafka failed to start within 60 seconds"
-                        echo "Last 10 lines of Kafka log:"
-                        tail -10 /var/log/confluent/kafka/kafka.log 2>/dev/null || echo "No log file found"
+            # Try to check status with retries
+            local check_retries=3
+            local check_attempt=1
+            local kafka_running=false
+            
+            while [ $check_attempt -le $check_retries ]; do
+                echo "  Status check attempt $check_attempt for $node_name..."
+                
+                if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -p $ssh_port $SSH_USER@localhost << 'EOF'; then
+                    for attempt in {1..10}; do
+                        if netstat -ln 2>/dev/null | grep -q ":9092.*LISTEN" || ss -ln 2>/dev/null | grep -q ":9092"; then
+                            echo "Kafka is listening on port 9092"
+                            exit 0
+                        fi
+                        
+                        if [ $attempt -eq 10 ]; then
+                            echo "Kafka not yet listening on port 9092 after 20 seconds"
+                            echo "Last 5 lines of Kafka log:"
+                            tail -5 /var/log/confluent/kafka/kafka.log 2>/dev/null || echo "No log file found"
+                            exit 1
+                        fi
+                        
+                        sleep 2
+                    done
+EOF
+                    kafka_running=true
+                    echo "✅ $node_name is running and listening on port 9092"
+                    break
+                else
+                    echo "  ⚠️  Status check attempt $check_attempt failed for $node_name"
+                    if [ $check_attempt -eq $check_retries ]; then
+                        echo "❌ Failed to verify Kafka status on $node_name after $check_retries attempts"
+                        echo "Attempting to get log information..."
+                        
+                        # Try one more time to get logs for troubleshooting
+                        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p $ssh_port $SSH_USER@localhost \
+                            "echo 'Kafka log tail:'; tail -10 /var/log/confluent/kafka/kafka.log 2>/dev/null || echo 'No log file found'" || echo "Could not retrieve logs"
+                        
                         exit 1
                     fi
-                    
-                    sleep 2
-                done
-EOF
+                    ((check_attempt++))
+                    sleep 10
+                fi
+            done
         done
         
         return 0
@@ -689,7 +795,7 @@ EOS
             # Production deployment - use systemd
             ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $SSH_USER@$node_ip << 'EOF'
                 # Create systemd service
-                sudo tee /etc/systemd/system/kafka.service > /dev/null << EOS
+                ${SUDO_CMD:+$SUDO_CMD} tee /etc/systemd/system/kafka.service > /dev/null << EOS
 [Unit]
 Description=Apache Kafka Server (KRaft Mode)
 Requires=network.target
@@ -709,15 +815,15 @@ RestartSec=30s
 WantedBy=multi-user.target
 EOS
                 
-                sudo systemctl daemon-reload
-                sudo systemctl enable kafka
-                sudo systemctl start kafka
+                ${SUDO_CMD:+$SUDO_CMD} systemctl daemon-reload
+                ${SUDO_CMD:+$SUDO_CMD} systemctl enable kafka
+                ${SUDO_CMD:+$SUDO_CMD} systemctl start kafka
                 
                 # Wait for service to start
                 sleep 10
-                sudo systemctl is-active kafka || {
+                ${SUDO_CMD:+$SUDO_CMD} systemctl is-active kafka || {
                     echo "ERROR: Kafka service failed to start"
-                    sudo journalctl -u kafka --no-pager -l
+                    ${SUDO_CMD:+$SUDO_CMD} journalctl -u kafka --no-pager -l
                     exit 1
                 }
 EOF
@@ -755,12 +861,27 @@ copy_files() {
                 
                 for file in "${FILES_TO_COPY[@]}"; do
                     echo "  - Copying $file to $container_name..."
-                    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $ssh_port \
-                        "/Users/alexk/pipelines/kafka-community-8/deployment-files/$file" \
-                        $SSH_USER@localhost:/tmp/ || {
-                        echo "ERROR: Failed to copy $file to $container_name"
-                        exit 1
-                    }
+                    
+                    # Add retry logic for file copying
+                    local max_retries=3
+                    local retry=1
+                    
+                    while [ $retry -le $max_retries ]; do
+                        if scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -P $ssh_port \
+                            "/Users/alexk/pipelines/kafka-community-8/deployment-files/$file" \
+                            $SSH_USER@localhost:/tmp/; then
+                            echo "    ✅ $file copied successfully (attempt $retry)"
+                            break
+                        else
+                            echo "    ⚠️  Copy attempt $retry failed for $file"
+                            if [ $retry -eq $max_retries ]; then
+                                echo "ERROR: Failed to copy $file to $container_name after $max_retries attempts"
+                                exit 1
+                            fi
+                            ((retry++))
+                            sleep 5
+                        fi
+                    done
                 done
                 echo "  ✅ All files copied successfully to $container_name"
             fi
