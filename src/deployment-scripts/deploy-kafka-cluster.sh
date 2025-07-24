@@ -37,18 +37,48 @@ if [[ ! "$SERVER_COUNT" =~ ^[0-9]+$ ]] || [[ $SERVER_COUNT -lt 1 ]]; then
     exit 1
 fi
 
+# SSH credentials prompting for Docker and Remote deployments
+if [[ "$DOCKER_DEPLOYMENT" == "true" ]] || [[ "$LOCAL_DEPLOYMENT" == "false" ]]; then
+    echo "=== SSH Credentials Configuration ==="
+    
+    if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+        echo "For Docker deployment, containers are accessed via localhost with these ports:"
+        echo "  - kafka-test-node1: localhost:2221"
+        echo "  - kafka-test-node2: localhost:2222" 
+        echo "  - kafka-test-node3: localhost:2223"
+        echo "Common SSH users: admin (default), root"
+    fi
+    
+    read -p "Enter SSH username for all servers: " SSH_USER
+    
+    # Validate SSH user input
+    if [[ -z "$SSH_USER" ]]; then
+        echo "ERROR: SSH username cannot be empty"
+        exit 1
+    fi
+    
+    echo "SSH username configured: $SSH_USER"
+    echo "Note: You will be prompted for the SSH password during deployment operations."
+    echo
+fi
+
 # Server configuration based on deployment type
 if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
+    # Docker deployment uses containers created by manage-servers.sh
+    declare -a CONTAINER_NAMES=("kafka-test-node1" "kafka-test-node2" "kafka-test-node3")
+    declare -a SSH_PORTS=("2221" "2222" "2223")
     declare -a HOSTNAMES=("kafka-node-1" "kafka-node-2" "kafka-node-3")
     declare -a IPS=("192.168.1.10" "192.168.1.11" "192.168.1.12")
-    SSH_USER="root"
-    SSH_KEY_PATH="~/.ssh/kafka_test_key"
     LOCAL_FILES_PATH="/tmp/files"
-else
+elif [[ "$LOCAL_DEPLOYMENT" == "false" ]]; then
+    # Remote deployment - use provided server details
     declare -a HOSTNAMES=("kafka-node-1" "kafka-node-2" "kafka-node-3")
     declare -a IPS=("192.168.1.10" "192.168.1.11" "192.168.1.12")
-    SSH_USER="root"
-    SSH_KEY_PATH="/path/to/private/key"
+    LOCAL_FILES_PATH="/Users/alexk/pipelines/kafka-community-8/deployment-files"
+else
+    # Local deployment
+    declare -a HOSTNAMES=("kafka-node-1" "kafka-node-2" "kafka-node-3")  
+    declare -a IPS=("127.0.0.1" "127.0.0.1" "127.0.0.1")
     LOCAL_FILES_PATH="/Users/alexk/pipelines/kafka-community-8/deployment-files"
 fi
 
@@ -117,12 +147,18 @@ validate_prerequisites() {
     fi
     
     if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
-        echo "Docker deployment - skipping local Java validation"
+        echo "Docker deployment - validating container prerequisites..."
         # Only check if Confluent ZIP exists in deployment-files
         if [[ ! -f "/Users/alexk/pipelines/kafka-community-8/deployment-files/$CONFLUENT_ZIP" ]]; then
             echo "ERROR: Confluent ZIP not found at /Users/alexk/pipelines/kafka-community-8/deployment-files/$CONFLUENT_ZIP"
             exit 1
         fi
+        
+        # Validate that containers have required utilities
+        echo "Checking if containers have required utilities..."
+        echo "Note: Since servers are air-gapped, all required utilities must be pre-installed"
+        echo "Required utilities: unzip, tar, sudo, groupadd, useradd"
+        
         echo "Prerequisites validation completed successfully"
         return 0
     fi
@@ -157,7 +193,7 @@ verify_os() {
         return 0
     fi
     
-    ssh $SSH_USER@$1 "grep -q 'Red Hat Enterprise Linux.*8' /etc/redhat-release" || {
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $SSH_USER@$1 "grep -q 'Red Hat Enterprise Linux.*8' /etc/redhat-release" || {
         echo "ERROR: $1 is not RHEL 8"
         exit 1
     }
@@ -172,36 +208,135 @@ test_ssh() {
     
     if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
         echo "Testing Docker SSH connectivity..."
-        local ports=(12222 12223 12224)
-        for i in "${!NODES[@]}"; do
+        for i in "${!CONTAINER_NAMES[@]}"; do
             if [[ $i -lt $SERVER_COUNT ]]; then
-                echo "Testing SSH to ${NODES[$i]} via localhost:${ports[$i]}..."
-                ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=${ports[$i]} -i ~/.ssh/kafka_test_key $SSH_USER@localhost "echo 'SSH OK'" || {
-                    echo "ERROR: Cannot SSH to ${NODES[$i]} via localhost:${ports[$i]}"
+                container_name=${CONTAINER_NAMES[$i]}
+                ssh_port=${SSH_PORTS[$i]}
+                node_name=${NODES[$i]}
+                
+                echo "Testing SSH to $container_name via localhost:$ssh_port..."
+                
+                # Test SSH connection with password prompt
+                ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port $SSH_USER@localhost "echo 'SSH OK to $container_name'" || {
+                    echo "ERROR: Cannot SSH to $container_name via localhost:$ssh_port"
+                    echo "Please ensure:"
+                    echo "  1. Container $container_name is running"
+                    echo "  2. SSH service is available on port $ssh_port"
+                    echo "  3. Username '$SSH_USER' and password are correct"
+                    echo ""
+                    echo "You can test manually with:"
+                    echo "  ssh $SSH_USER@localhost -p $ssh_port"
+                    echo ""
+                    echo "Or check container status with:"
+                    echo "  ./manage-servers.sh status"
                     exit 1
                 }
+                
+                # Test required utilities on each container
+                echo "  Testing required utilities on $container_name..."
+                ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port $SSH_USER@localhost << 'UTILITY_CHECK'
+                    MISSING_UTILITIES=()
+                    
+                    if ! command -v unzip &> /dev/null; then
+                        MISSING_UTILITIES+=("unzip")
+                    fi
+                    
+                    if ! command -v tar &> /dev/null; then
+                        MISSING_UTILITIES+=("tar")
+                    fi
+                    
+                    if ! command -v sudo &> /dev/null; then
+                        MISSING_UTILITIES+=("sudo")
+                    fi
+                    
+                    if ! command -v groupadd &> /dev/null; then
+                        MISSING_UTILITIES+=("groupadd")
+                    fi
+                    
+                    if ! command -v useradd &> /dev/null; then
+                        MISSING_UTILITIES+=("useradd")
+                    fi
+                    
+                    if [[ ${#MISSING_UTILITIES[@]} -gt 0 ]]; then
+                        echo "ERROR: Required utilities missing on this container:"
+                        for util in "${MISSING_UTILITIES[@]}"; do
+                            echo "  - $util"
+                        done
+                        echo ""
+                        echo "This is an air-gapped deployment. All utilities must be pre-installed."
+                        exit 1
+                    fi
+                    
+                    echo "  ✅ All required utilities available on this container"
+UTILITY_CHECK
             fi
         done
         echo "Docker SSH connectivity test completed successfully"
         return 0
     fi
     
-    echo "Testing SSH connectivity..."
+    echo "Testing SSH connectivity to remote servers..."
     for i in "${!NODES[@]}"; do
         if [[ $i -lt $SERVER_COUNT ]]; then
-            echo "Testing SSH to ${NODES[$i]} (${IPS[$i]})..."
-            ssh -o ConnectTimeout=5 -o BatchMode=yes $SSH_USER@${IPS[$i]} "echo 'SSH OK'" || {
-                echo "ERROR: Cannot SSH to ${NODES[$i]} (${IPS[$i]})"
+            node_name=${NODES[$i]}
+            node_ip=${IPS[$i]}
+            
+            echo "Testing SSH to $node_name ($node_ip)..."
+            
+            # Test SSH connection with password prompt for remote servers
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $SSH_USER@$node_ip "echo 'SSH OK to $node_name'" || {
+                echo "ERROR: Cannot SSH to $node_name ($node_ip)"
                 echo "Please ensure:"
-                echo "  1. SSH key is properly configured"
-                echo "  2. Host is reachable"
-                echo "  3. SSH service is running on target host"
+                echo "  1. SSH service is running on target host"
+                echo "  2. Host $node_ip is reachable"
+                echo "  3. Username '$SSH_USER' and password are correct"
+                echo "  4. SSH password authentication is enabled"
                 exit 1
             }
-            verify_os ${IPS[$i]}
+            
+            # Test required utilities on remote server
+            echo "  Testing required utilities on $node_name..."
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $SSH_USER@$node_ip << 'UTILITY_CHECK'
+                MISSING_UTILITIES=()
+                
+                if ! command -v unzip &> /dev/null; then
+                    MISSING_UTILITIES+=("unzip")
+                fi
+                
+                if ! command -v tar &> /dev/null; then
+                    MISSING_UTILITIES+=("tar")
+                fi
+                
+                if ! command -v sudo &> /dev/null; then
+                    MISSING_UTILITIES+=("sudo")
+                fi
+                
+                if ! command -v groupadd &> /dev/null; then
+                    MISSING_UTILITIES+=("groupadd")
+                fi
+                
+                if ! command -v useradd &> /dev/null; then
+                    MISSING_UTILITIES+=("useradd")
+                fi
+                
+                if [[ ${#MISSING_UTILITIES[@]} -gt 0 ]]; then
+                    echo "ERROR: Required utilities missing on this server:"
+                    for util in "${MISSING_UTILITIES[@]}"; do
+                        echo "  - $util"
+                    done
+                    echo ""
+                    echo "This is an air-gapped deployment. All utilities must be pre-installed."
+                    exit 1
+                fi
+                
+                echo "  ✅ All required utilities available on this server"
+UTILITY_CHECK
+            
+            # Verify OS for remote deployment
+            verify_os $node_ip
         fi
     done
-    echo "SSH connectivity test completed successfully"
+    echo "Remote SSH connectivity test completed successfully"
 }
 
 # Install on node
@@ -216,13 +351,12 @@ install_node() {
         FILE_PREFIX="$LOCAL_FILES_PATH/"
         EXEC_PREFIX=""
     elif [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
-        FILE_PREFIX="/tmp/files/"
-        local ports=(12222 12223 12224)
-        local port=${ports[$((node_id-1))]}
-        EXEC_PREFIX="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=$port -i ~/.ssh/kafka_test_key $SSH_USER@localhost"
+        FILE_PREFIX="/tmp/"
+        ssh_port=${SSH_PORTS[$((node_id-1))]}
+        EXEC_PREFIX="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port $SSH_USER@localhost"
     else
         FILE_PREFIX="/tmp/"
-        EXEC_PREFIX="ssh $SSH_USER@$node_ip"
+        EXEC_PREFIX="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $SSH_USER@$node_ip"
     fi
     
     $EXEC_PREFIX bash << EOF
@@ -414,18 +548,17 @@ start_services() {
     
     if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
         # Start all Docker nodes simultaneously in background
-        local ports=(12222 12223 12224)
         for i in "${!NODES[@]}"; do
             if [[ $i -ge $SERVER_COUNT ]]; then
                 continue
             fi
             
-            local node_name=${NODES[$i]}
-            local port=${ports[$i]}
+            node_name=${NODES[$i]}
+            ssh_port=${SSH_PORTS[$i]}
             
             echo "Starting Kafka on $node_name in background..."
             
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=$port -i ~/.ssh/kafka_test_key $SSH_USER@localhost << 'EOF' &
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port $SSH_USER@localhost << 'EOF' &
                 # Find JDK directory
                 JDK_DIR=$(ls -d /opt/jdk-21* 2>/dev/null | head -1)
                 if [[ -n "$JDK_DIR" ]]; then
@@ -451,12 +584,12 @@ EOF
                 continue
             fi
             
-            local node_name=${NODES[$i]}
-            local port=${ports[$i]}
+            node_name=${NODES[$i]}  
+            ssh_port=${SSH_PORTS[$i]}
             
             echo "Checking Kafka on $node_name..."
             
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=$port -i ~/.ssh/kafka_test_key $SSH_USER@localhost << 'EOF'
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port $SSH_USER@localhost << 'EOF'
                 for attempt in {1..30}; do
                     if netstat -ln 2>/dev/null | grep -q ":9092.*LISTEN" || ss -ln 2>/dev/null | grep -q ":9092"; then
                         echo "Kafka started successfully on port 9092"
@@ -483,8 +616,8 @@ EOF
             continue
         fi
         
-        local node_ip=${IPS[$i]}
-        local node_name=${NODES[$i]}
+        node_ip=${IPS[$i]}
+        node_name=${NODES[$i]}
         
         echo "Starting Kafka on $node_name..."
         
@@ -554,7 +687,7 @@ EOS
 
         else
             # Production deployment - use systemd
-            ssh $SSH_USER@$node_ip << 'EOF'
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $SSH_USER@$node_ip << 'EOF'
                 # Create systemd service
                 sudo tee /etc/systemd/system/kafka.service > /dev/null << EOS
 [Unit]
@@ -601,27 +734,64 @@ copy_files() {
         return 0
     fi
     
+    echo "Copying installation files to all nodes..."
+    
+    # Define all required files
+    local FILES_TO_COPY=(
+        "$CONFLUENT_ZIP"
+        "jdk-21_linux-aarch64_bin.tar.gz"
+    )
+    
     if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
-        echo "Docker deployment - files already mounted in containers"
-        return 0
+        # Copy files to Docker containers via SSH - sequential to avoid password conflicts
+        echo "Copying files to Docker containers..."
+        
+        for i in "${!CONTAINER_NAMES[@]}"; do
+            if [[ $i -lt $SERVER_COUNT ]]; then
+                container_name=${CONTAINER_NAMES[$i]}
+                ssh_port=${SSH_PORTS[$i]}
+                
+                echo "Copying files to $container_name via localhost:$ssh_port..."
+                
+                for file in "${FILES_TO_COPY[@]}"; do
+                    echo "  - Copying $file to $container_name..."
+                    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $ssh_port \
+                        "/Users/alexk/pipelines/kafka-community-8/deployment-files/$file" \
+                        $SSH_USER@localhost:/tmp/ || {
+                        echo "ERROR: Failed to copy $file to $container_name"
+                        exit 1
+                    }
+                done
+                echo "  ✅ All files copied successfully to $container_name"
+            fi
+        done
+        
+    else
+        # Copy files to remote servers - sequential to avoid password conflicts
+        echo "Copying files to remote servers..."
+        
+        for i in "${!IPS[@]}"; do
+            if [[ $i -lt $SERVER_COUNT ]]; then
+                ip=${IPS[$i]}
+                node_name=${NODES[$i]}
+                
+                echo "Copying files to $node_name ($ip)..."
+                
+                for file in "${FILES_TO_COPY[@]}"; do
+                    echo "  - Copying $file to $node_name..."
+                    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                        "$LOCAL_FILES_PATH/$file" \
+                        $SSH_USER@$ip:/tmp/ || {
+                        echo "ERROR: Failed to copy $file to $ip"
+                        exit 1
+                    }
+                done
+                echo "  ✅ All files copied successfully to $node_name"
+            fi
+        done
     fi
     
-    echo "Copying installation files..."
-    for i in "${!IPS[@]}"; do
-        if [[ $i -lt $SERVER_COUNT ]]; then
-            local ip=${IPS[$i]}
-            echo "Copying files to $ip..."
-            scp "$LOCAL_FILES_PATH/$CONFLUENT_ZIP" $SSH_USER@$ip:/tmp/ || {
-                echo "ERROR: Failed to copy $CONFLUENT_ZIP to $ip"
-                exit 1
-            }
-            scp "$LOCAL_FILES_PATH/jdk-21_linux-aarch64_bin.tar.gz" $SSH_USER@$ip:/tmp/ || {
-                echo "ERROR: Failed to copy Java tarball to $ip"
-                exit 1
-            }
-        fi
-    done
-    echo "File copying completed successfully"
+    echo "✅ File copying completed successfully for all nodes"
 }
 
 # Verify cluster health
@@ -647,13 +817,15 @@ verify_cluster() {
         }
         echo "✅ Cluster metadata is accessible"
     elif [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
-        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=12222 -i ~/.ssh/kafka_test_key $SSH_USER@localhost "JDK_DIR=\$(ls -d /opt/jdk-21* 2>/dev/null | head -1); JAVA_HOME=\$JDK_DIR /opt/kafka/bin/kafka-broker-api-versions --bootstrap-server kafka-${ENVIRONMENT}-node-1:$PLAINTEXT_PORT" || {
+        # Use the first container for cluster verification
+        ssh_port=${SSH_PORTS[0]}
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $ssh_port $SSH_USER@localhost "JDK_DIR=\$(ls -d /opt/jdk-21* 2>/dev/null | head -1); JAVA_HOME=\$JDK_DIR /opt/kafka/bin/kafka-broker-api-versions --bootstrap-server kafka-${ENVIRONMENT}-node-1:$PLAINTEXT_PORT" || {
             echo "ERROR: Cluster verification failed"
             exit 1
         }
         echo "✅ Docker cluster is responding"
     else
-        ssh $SSH_USER@${IPS[0]} "JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-broker-api-versions --bootstrap-server kafka-${ENVIRONMENT}-node-1:$PLAINTEXT_PORT" || {
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $SSH_USER@${IPS[0]} "JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-broker-api-versions --bootstrap-server kafka-${ENVIRONMENT}-node-1:$PLAINTEXT_PORT" || {
             echo "ERROR: Cluster verification failed"
             exit 1
         }
@@ -666,24 +838,30 @@ verify_cluster() {
 # Main execution
 echo "=== Kafka Cluster Deployment for Environment: $ENVIRONMENT ==="
 echo "Configuration:"
-echo "  - Deployment type: Production (multi-node)"
+echo "  - Deployment type: Air-gapped (offline)"
 echo "  - Java version: 21"
 echo "  - Kafka version: Confluent Community 8.0.0"
 echo "  - Server count: $SERVER_COUNT"
 echo "  - Data directory: $DATA_DIR"
 echo "  - Log directory: $LOG_DIR"
+echo "  - Note: All required utilities must be pre-installed (no internet access)"
 echo ""
 
+echo "Phase 1: Validating prerequisites and connectivity..."
 validate_prerequisites
+echo "Phase 2: Testing SSH connectivity and required utilities..."
 test_ssh
+echo "Phase 3: Copying installation files to all nodes..."
 copy_files
 
-# Generate shared cluster UUID for all nodes
+echo "Phase 4: Generating shared cluster UUID and installing nodes..."
+# Generate shared cluster UUID for all nodes - use local generation or simple UUID
 echo "Generating shared cluster UUID..."
-if [[ "$DOCKER_DEPLOYMENT" == "true" ]]; then
-    SHARED_CLUSTER_UUID=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Port=12222 -i ~/.ssh/kafka_test_key root@localhost "JDK_DIR=\$(ls -d /opt/jdk-21* 2>/dev/null | head -1); JAVA_HOME=\$JDK_DIR /opt/kafka/bin/kafka-storage random-uuid")
-else
+if [[ "$LOCAL_DEPLOYMENT" == "true" ]]; then
     SHARED_CLUSTER_UUID=$(JAVA_HOME=$JAVA_HOME /opt/kafka/bin/kafka-storage random-uuid)
+else
+    # Generate a simple UUID for Docker and Remote deployments
+    SHARED_CLUSTER_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
 fi
 echo "Shared cluster UUID: $SHARED_CLUSTER_UUID"
 export SHARED_CLUSTER_UUID
@@ -695,7 +873,9 @@ for i in "${!NODES[@]}"; do
     install_node ${IPS[$i]} $((i+1)) $is_first
 done
 
+echo "Phase 5: Starting Kafka services..."
 start_services
+echo "Phase 6: Verifying cluster health..."
 verify_cluster
 
 echo "=== Deployment Complete ==="
