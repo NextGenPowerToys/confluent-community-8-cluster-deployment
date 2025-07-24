@@ -110,6 +110,30 @@ services:
         tail -f /dev/null
       "
 
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    hostname: kafka-ui
+    container_name: kafka-ui
+    networks:
+      servers-net:
+        ipv4_address: 192.168.1.20
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "kafka-test-node1:192.168.1.10"
+      - "kafka-test-node2:192.168.1.11"
+      - "kafka-test-node3:192.168.1.12"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "kafka-cluster"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka-test-node1:9092,kafka-test-node2:9092,kafka-test-node3:9092"
+      KAFKA_CLUSTERS_0_READONLY: "false"
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      - kafka-test-node1
+      - kafka-test-node2
+      - kafka-test-node3
+    restart: unless-stopped
+
 networks:
   servers-net:
     driver: bridge

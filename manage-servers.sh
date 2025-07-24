@@ -10,7 +10,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-CONTAINERS=("kafka-test-node1" "kafka-test-node2" "kafka-test-node3")
+CONTAINERS=("kafka-test-node1" "kafka-test-node2" "kafka-test-node3" "kafka-ui")
 SSH_PORTS=(2221 2222 2223)
 ADMIN_USER="admin"
 ADMIN_PASSWORD="password123"
@@ -351,8 +351,17 @@ show_status() {
     
     for i in "${!CONTAINERS[@]}"; do
         local container="${CONTAINERS[$i]}"
-        local port="${SSH_PORTS[$i]}"
         
+        # Skip SSH info for kafka-ui since it doesn't have SSH
+        if [[ "$container" == "kafka-ui" ]]; then
+            echo -e "${BLUE}$container${NC} (Web UI):"
+            echo "  Access Kafka UI: http://localhost:8080"
+            echo "  IP: 192.168.1.20"
+            echo ""
+            continue
+        fi
+        
+        local port="${SSH_PORTS[$i]}"
         echo -e "${BLUE}$container${NC} (IP: 192.168.1.$((10 + i))):"
         echo "  Admin user: ssh $ADMIN_USER@localhost -p $port"
         echo "  Root user:  ssh root@localhost -p $port"
@@ -384,6 +393,13 @@ test_ssh_connections() {
     local all_accessible=true
     for i in "${!CONTAINERS[@]}"; do
         local container="${CONTAINERS[$i]}"
+        
+        # Skip SSH test for kafka-ui since it doesn't have SSH
+        if [[ "$container" == "kafka-ui" ]]; then
+            print_status "Skipping SSH test for $container (Web UI container)"
+            continue
+        fi
+        
         local port="${SSH_PORTS[$i]}"
         
         if test_ssh_connection "$container" "$port"; then
@@ -400,6 +416,10 @@ test_ssh_connections() {
         echo "# Test connection with password authentication:"
         for i in "${!CONTAINERS[@]}"; do
             local container="${CONTAINERS[$i]}"
+            # Skip SSH examples for kafka-ui
+            if [[ "$container" == "kafka-ui" ]]; then
+                continue
+            fi
             local port="${SSH_PORTS[$i]}"
             echo "ssh -o StrictHostKeyChecking=no $ADMIN_USER@localhost -p $port 'hostname && whoami'"
         done
