@@ -16,7 +16,7 @@ services:
     command: >
       bash -c "
         dnf update -y &&
-        dnf install -y openssh-server sudo passwd hostname util-linux procps-ng &&
+        dnf install -y openssh-server sudo passwd hostname util-linux procps-ng unzip tar gzip &&
         ssh-keygen -A &&
         useradd -m -s /bin/bash admin &&
         echo 'admin:password123' | chpasswd &&
@@ -47,7 +47,7 @@ services:
     command: >
       bash -c "
         dnf update -y &&
-        dnf install -y openssh-server sudo passwd hostname util-linux procps-ng &&
+        dnf install -y openssh-server sudo passwd hostname util-linux procps-ng unzip tar gzip &&
         ssh-keygen -A &&
         useradd -m -s /bin/bash admin &&
         echo 'admin:password123' | chpasswd &&
@@ -78,7 +78,7 @@ services:
     command: >
       bash -c "
         dnf update -y &&
-        dnf install -y openssh-server sudo passwd hostname util-linux procps-ng &&
+        dnf install -y openssh-server sudo passwd hostname util-linux procps-ng unzip tar gzip &&
         ssh-keygen -A &&
         useradd -m -s /bin/bash admin &&
         echo 'admin:password123' | chpasswd &&
